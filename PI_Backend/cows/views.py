@@ -18,15 +18,39 @@ class CowListCreateView(APIView):
 
     # CREATE cow
     def post(self, request):
-        farm = Farm.objects.get(user=request.user)
+        try:
+            farm = Farm.objects.get(user=request.user)
+        except Farm.DoesNotExist:
+            return Response({"error": "Farm not found"}, status=404)
 
-        data = request.data.copy()
-        data['farm'] = farm.id
+        serializer = CowSerializer(data=request.data)
+        print(request.FILES)
 
-        serializer = CowSerializer(data=data)
+        if serializer.is_valid():
+            cow = serializer.save(farm=farm)  
+            return Response({"data": CowSerializer(cow).data}, status=201)
 
+        return Response(serializer.errors, status=400)
+    
+    def get_object(self, request, pk):
+        try:
+            return Cow.objects.get(pk=pk, farm__user=request.user)
+        except Cow.DoesNotExist:
+            return None
+
+    def put(self, request, pk):
+        cow = self.get_object(request, pk)
+        if not cow:
+            return Response({"error": "Vache introuvable"}, status=404)
+        serializer = CowSerializer(cow, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
             return Response({"data": serializer.data})
-
         return Response(serializer.errors, status=400)
+
+    def delete(self, request, pk):
+        cow = self.get_object(request, pk)
+        if not cow:
+            return Response({"error": "Vache introuvable"}, status=404)
+        cow.delete()
+        return Response({"message": "Vache supprimée"}, status=204)

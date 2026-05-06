@@ -27,31 +27,26 @@ export const getCows = async () => {
 export const createCow = async (cowData) => {
   const config = await getAuthHeader();
 
-  const response = await cowApi.post('/cows/', cowData, config);
-
-  return response.data.data;
-};
-
-export const getCowById = async (id) => {
-  const config = await getAuthHeader();
-
-  const response = await cowApi.get(`/cows/${id}/`, config);
-
-  return response.data.data;
-};
-
-export const updateCow = async (id, data) => {
-  const config = await getAuthHeader();
-
-  const response = await cowApi.put(`/cows/${id}/`, data, config);
-
-  return response.data.data;
+  return cowApi.post('/cows/', cowData, {
+    ...config,
+    headers: {
+      ...config.headers    },
+  });
 };
 
 export const deleteCow = async (id) => {
   const config = await getAuthHeader();
+  await cowApi.delete(`/cows/${id}/`, config);
+};
 
-  const response = await cowApi.delete(`/cows/${id}/`, config);
-
-  return response.data;
+export const updateCow = async (id, formData) => {
+  const config = await getAuthHeader();
+  const response = await cowApi.put(`/cows/${id}/`, formData, {
+    ...config,
+    headers: {
+      ...config.headers,
+      'Content-Type': 'multipart/form-data',
+    },
+  });
+  return response.data.data;
 };

@@ -25,6 +25,9 @@ import cowV1 from '../../assets/v1.png';
 import cowV2 from '../../assets/v2.png';
 import cowV3 from '../../assets/v3.png';
 import cowV4 from '../../assets/v4.png';
+import { createCow, deleteCow, getCows, updateCow } from '../services/cowService';
+
+import * as ImagePicker from 'expo-image-picker';
 
 const { width } = Dimensions.get('window');
 
@@ -55,10 +58,8 @@ const cowImages = {
 
 const FILTERS = [
   { key: 'all', label: 'Toutes', icon: 'apps-outline' },
-  { key: 'danger', label: 'Hors zone', icon: 'location-outline' },
-  { key: 'warn', label: 'Alertes', icon: 'warning-outline' },
-  { key: 'info', label: 'Gestation', icon: 'leaf-outline' },
-  { key: 'ok', label: 'OK', icon: 'checkmark-circle-outline' },
+  { key: 'F', label: 'Femelles', icon: 'female-outline' },
+  { key: 'M', label: 'Mâles', icon: 'male-outline' },
 ];
 
 const STATUS_STYLES = {
@@ -320,9 +321,9 @@ const AnimatedInfo = memo(function AnimatedInfo({ children, delay = 0, style }) 
   );
 });
 
-const CowPhoto = memo(function CowPhoto({ status, size = 156, cowId }) {
+const CowPhoto = memo(function CowPhoto({ status, size = 156, cowId, photoUrl }) {
   const { bg } = getStatusStyle(status);
-  const imageSource = cowImages[cowId] || cowV1;
+  const imageSource = photoUrl ? { uri: photoUrl } : (cowImages[cowId] || cowV1);
 
   return (
     <View
@@ -354,7 +355,7 @@ const FilterPill = memo(function FilterPill({ item, active, onPress }) {
   );
 });
 
-const CowCard = memo(function CowCard({ cow, index, onPress }) {
+const CowCard = memo(function CowCard({ cow, index, onPress, onDelete, onEdit }) {
   const anim = useRef(new Animated.Value(0)).current;
   const { color, label } = getStatusStyle(cow.status);
 
@@ -368,49 +369,46 @@ const CowCard = memo(function CowCard({ cow, index, onPress }) {
   }, [anim, index]);
 
   return (
-    <Animated.View
-      style={{
-        opacity: anim,
-        transform: [
-          {
-            translateY: anim.interpolate({
-              inputRange: [0, 1],
-              outputRange: [16, 0],
-            }),
-          },
-        ],
-      }}
-    >
+    <Animated.View style={{ opacity: anim, transform: [{ translateY: anim.interpolate({ inputRange: [0, 1], outputRange: [16, 0] }) }] }}>
       <TouchableOpacity style={card.outer} activeOpacity={0.88} onPress={() => onPress(cow)}>
         <View style={card.photoBlock}>
-          <CowPhoto status={cow.status} size={156} cowId={cow.id} />
+          <CowPhoto status={cow.status} size={156} cowId={cow.id} photoUrl={cow.photo} />
         </View>
 
         <View style={card.infoCard}>
           <View style={card.topRow}>
             <View style={{ flex: 1 }}>
-              <Text style={card.name} numberOfLines={1}>
-                {cow.name}
-              </Text>
-
-              <Text style={card.breed} numberOfLines={1}>
-                #{cow.id} · {cow.breed}
-              </Text>
+              <Text style={card.name} numberOfLines={1}>{cow.name}</Text>
+              <Text style={card.breed} numberOfLines={1}>#{cow.id} · {cow.breed}</Text>
             </View>
-
-            <Ionicons name="male-female-outline" size={16} color={COLORS.sage} />
+            <View style={{ flexDirection: 'row', gap: 8 }}>
+              <TouchableOpacity onPress={() => onEdit(cow)}>
+                <Ionicons name="pencil-outline" size={18} color={COLORS.primary} />
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => onDelete(cow.id)}>
+                <Ionicons name="trash-outline" size={18} color={COLORS.danger} />
+              </TouchableOpacity>
+            </View>
           </View>
 
           <View style={card.metaRow}>
             <Ionicons name="calendar-outline" size={13} color={COLORS.sage} />
-            <Text style={card.meta}>{cow.age} ans</Text>
+            <Text style={card.meta}>{cow.age} ans · {cow.birth_date || '—'}</Text>
+          </View>
+
+          <View style={card.metaRow}>
+            <Ionicons name="male-female-outline" size={13} color={COLORS.sage} />
+            <Text style={card.meta}>{cow.sex === 'F' ? 'Femelle' : 'Mâle'} · {cow.weight || '—'} kg</Text>
+          </View>
+
+          <View style={card.metaRow}>
+            <Ionicons name="pricetag-outline" size={13} color={COLORS.sage} />
+            <Text style={card.meta}>{cow.ear_tag || '—'}</Text>
           </View>
 
           <View style={card.metaRow}>
             <Ionicons name="location" size={13} color={COLORS.primary} />
-            <Text style={card.meta} numberOfLines={1}>
-              {cow.activity}
-            </Text>
+            <Text style={card.meta} numberOfLines={1}>{cow.activity}</Text>
           </View>
 
           <View style={card.bottomRow}>
@@ -420,10 +418,9 @@ const CowCard = memo(function CowCard({ cow, index, onPress }) {
                 {cow.statusLabel || label}
               </Text>
             </View>
-
             <View style={card.milkPill}>
               <MaterialCommunityIcons name="water-outline" size={13} color={COLORS.primary} />
-              <Text style={card.milkText}>{cow.milkToday || 18} kg</Text>
+              <Text style={card.milkText}>{cow.milkToday || 0} kg</Text>
             </View>
           </View>
         </View>
@@ -817,32 +814,69 @@ const AddCowSheetContent = memo(function AddCowSheetContent({
     };
   }, [birthDate, breed, stableInternalId]);
 
-  const handleAdd = async () => {
-  try {
-    const payload = {
-  name: name.trim(),
-  ear_tag: generated.din,
-  breed: breed || null,
-  birth_date: birthDate
-    ? new Date(birthDate).toISOString().split('T')[0]
-    : null,
-  health_status: 'healthy',
+  const [photo, setPhoto] = useState(null);
+  const pickImage = async () => {
+  const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+
+  if (!permission.granted) {
+    alert("Permission refusée pour accéder aux images");
+    return;
+  }
+
+  const result = await ImagePicker.launchImageLibraryAsync({
+    mediaTypes: ImagePicker.MediaTypeOptions.Images,
+    allowsEditing: true,
+    quality: 0.8,
+  });
+
+  if (!result.canceled) {
+    setPhoto(result.assets[0].uri);
+  }
 };
 
-    const res = await createCow(payload);
 
+const handleAdd = async () => {
+  try {
+    const formData = new FormData();
+
+    formData.append('name', name.trim());
+    formData.append('ear_tag', generated.din);
+    formData.append('breed', breed || '');
+    formData.append(
+      'birth_date',
+      birthDate ? new Date(birthDate).toISOString().split('T')[0] : ''
+    );
+    formData.append('health_status', 'healthy');
+    formData.append('sex', sex || '');
+    formData.append('weight', generated.weight);
+
+    if (photo) {
+      try {
+        const response = await fetch(photo);
+        const blob = await response.blob();
+        const file = new File([blob], 'cow.jpg', { type: 'image/jpeg' });
+        formData.append('photo', file);
+      } catch (e) {
+        console.log('Photo error:', e);
+      }
+    }
+
+    const res = await createCow(formData);
     console.log('Cow created:', res);
 
-  
     setName('');
     setBreed('');
     setSex('Femelle');
     setBirthDate('');
+    setPhoto(null);
 
     alert('Vache ajoutée avec succès 🐄');
+    onAddCow();
+    onClose();
+
   } catch (error) {
     console.log('ERROR ADD COW:', error.response?.data || error);
-    alert('Erreur lors de l’ajout');
+    alert("Erreur lors de l'ajout");
   }
 };
 
@@ -853,10 +887,21 @@ const AddCowSheetContent = memo(function AddCowSheetContent({
         contentContainerStyle={addSheet.content}
         keyboardShouldPersistTaps="handled"
       >
-        <View style={addSheet.photoBox}>
+        <TouchableOpacity style={addSheet.photoBox} onPress={pickImage}>
           <Ionicons name="camera-outline" size={24} color={COLORS.primary} />
           <Text style={addSheet.photoText}>Ajouter une photo</Text>
-        </View>
+        </TouchableOpacity>
+        {photo && (
+  <Image
+    source={{ uri: photo }}
+    style={{
+      width: 90,
+      height: 90,
+      borderRadius: 10,
+      marginTop: 10,
+    }}
+  />
+)}
 
         <Text style={addSheet.sectionLabel}>Champs remplis par l’utilisateur</Text>
 
@@ -1136,15 +1181,20 @@ const CowDetailModal = memo(function CowDetailModal({
     }
   }, [contentFade, visible]);
 
-  const indicatorTranslateY = useMemo(
-    () =>
-      slideAnim.interpolate({
-        inputRange: allCows.map((_, index) => index),
-        outputRange: allCows.map((_, index) => index * (THUMB_HEIGHT + THUMB_GAP)),
-        extrapolate: 'clamp',
-      }),
-    [slideAnim, allCows]
-  );
+const indicatorTranslateY = useMemo(() => {
+  if (!allCows || allCows.length < 2) {
+    return slideAnim.interpolate({
+      inputRange: [0, 1],
+      outputRange: [0, THUMB_HEIGHT + THUMB_GAP],
+      extrapolate: 'clamp',
+    });
+  }
+  return slideAnim.interpolate({
+    inputRange: allCows.map((_, index) => index),
+    outputRange: allCows.map((_, index) => index * (THUMB_HEIGHT + THUMB_GAP)),
+    extrapolate: 'clamp',
+  });
+}, [slideAnim, allCows]);
 
   const quickPills = useMemo(() => {
     if (!displayCow) return [];
@@ -1251,11 +1301,7 @@ const CowDetailModal = memo(function CowDetailModal({
                   >
                     <View style={[detail.thumbDot, { backgroundColor: iconColor }]} />
 
-                    <CowPhoto
-                      status={item.status}
-                      size={isActive ? 52 : 44}
-                      cowId={item.id}
-                    />
+                    <CowPhoto status={item.status} size={isActive ? 52 : 44} cowId={item.id} photoUrl={item.photo} />
 
                     {isActive && (
                       <Animated.View
@@ -1490,10 +1536,218 @@ const CowDetailModal = memo(function CowDetailModal({
   );
 });
 
+const EditCowSheetContent = memo(function EditCowSheetContent({ cow, onUpdate, onClose }) {
+  const [name, setName] = useState(cow.name || '');
+  const [breed, setBreed] = useState(cow.breed || '');
+  const [sex, setSex] = useState(cow.sex || 'F');
+  const [weight, setWeight] = useState(String(cow.weight || ''));
+  const [birthDate, setBirthDate] = useState(cow.birth_date || '');
+  const [photo, setPhoto] = useState(null);
+  const [breedSheetOpen, setBreedSheetOpen] = useState(false);
+  const [dateSheetOpen, setDateSheetOpen] = useState(false);
+
+  const pickImage = async () => {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      alert("Permission refusée pour accéder aux images");
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsEditing: true,
+      quality: 0.8,
+    });
+    if (!result.canceled) {
+      setPhoto(result.assets[0].uri);
+    }
+  };
+
+  const handleSave = async () => {
+    const formData = new FormData();
+    formData.append('name', name.trim());
+    formData.append('breed', breed || '');
+    formData.append('sex', sex || '');
+    formData.append('weight', parseFloat(weight) || 0);
+    formData.append('birth_date', birthDate ? birthDate.split('T')[0] : '');
+
+    if (photo) {
+      try {
+        const response = await fetch(photo);
+        const blob = await response.blob();
+        const file = new File([blob], 'cow.jpg', { type: 'image/jpeg' });
+        formData.append('photo', file);
+      } catch (e) {
+        console.log('Photo error:', e);
+      }
+    }
+
+    await onUpdate(cow.id, formData);
+  };
+
+  return (
+    <>
+      <ScrollView contentContainerStyle={addSheet.content} keyboardShouldPersistTaps="handled">
+        
+        <TouchableOpacity style={addSheet.photoBox} onPress={pickImage}>
+          <Ionicons name="camera-outline" size={24} color={COLORS.primary} />
+          <Text style={addSheet.photoText}>
+            {photo ? 'Changer la photo' : 'Ajouter une photo'}
+          </Text>
+        </TouchableOpacity>
+
+        {photo && (
+          <Image
+            source={{ uri: photo }}
+            style={{ width: 90, height: 90, borderRadius: 10, marginTop: 10, marginBottom: 10 }}
+          />
+        )}
+
+        {!photo && cow.photo && (
+          <Image
+            source={{ uri: cow.photo }}
+            style={{ width: 90, height: 90, borderRadius: 10, marginTop: 10, marginBottom: 10 }}
+          />
+        )}
+
+        <View style={addSheet.inputGroup}>
+          <Text style={addSheet.label}>Nom</Text>
+          <TextInput value={name} onChangeText={setName} style={addSheet.input} placeholderTextColor={COLORS.sage} />
+        </View>
+
+        <View style={addSheet.inputGroup}>
+          <Text style={addSheet.label}>Race</Text>
+          <TouchableOpacity
+            activeOpacity={0.84}
+            style={addSheet.selectInput}
+            onPress={() => setBreedSheetOpen(true)}
+          >
+            <Text style={addSheet.selectText}>{breed || 'Choisir une race'}</Text>
+            <Ionicons name="chevron-down" size={18} color={COLORS.primary} />
+          </TouchableOpacity>
+        </View>
+
+        <View style={addSheet.inputGroup}>
+          <Text style={addSheet.label}>Sexe</Text>
+          <View style={addSheet.sexRow}>
+            {[{ key: 'F', label: 'Femelle' }, { key: 'M', label: 'Mâle' }].map((item) => (
+              <TouchableOpacity
+                key={item.key}
+                onPress={() => setSex(item.key)}
+                style={[addSheet.sexBtn, sex === item.key && addSheet.sexBtnActive]}
+              >
+                <Text style={[addSheet.sexText, sex === item.key && addSheet.sexTextActive]}>
+                  {item.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        </View>
+
+        <View style={addSheet.inputGroup}>
+          <Text style={addSheet.label}>Poids (kg)</Text>
+          <TextInput
+            value={weight}
+            onChangeText={setWeight}
+            style={addSheet.input}
+            keyboardType="numeric"
+            placeholderTextColor={COLORS.sage}
+          />
+        </View>
+
+        <View style={addSheet.inputGroup}>
+          <Text style={addSheet.label}>Date de naissance</Text>
+          <TouchableOpacity
+            activeOpacity={0.84}
+            style={addSheet.selectInput}
+            onPress={() => setDateSheetOpen(true)}
+          >
+            <Text style={addSheet.selectText}>{birthDate || 'Choisir une date'}</Text>
+            <Ionicons name="calendar-outline" size={18} color={COLORS.primary} />
+          </TouchableOpacity>
+        </View>
+
+        <TouchableOpacity activeOpacity={0.86} style={addSheet.submitBtn} onPress={handleSave}>
+          <Ionicons name="checkmark" size={19} color={COLORS.white} />
+          <Text style={addSheet.submitText}>Enregistrer</Text>
+        </TouchableOpacity>
+
+      </ScrollView>
+
+      <BottomSheet
+        visible={breedSheetOpen}
+        title="Choisir la race"
+        onClose={() => setBreedSheetOpen(false)}
+        height={470}
+      >
+        <ScrollView showsVerticalScrollIndicator={false}>
+          {BREED_OPTIONS.map((item) => {
+            const active = breed === item;
+            return (
+              <TouchableOpacity
+                key={item}
+                activeOpacity={0.84}
+                style={[addSheet.optionRow, active && addSheet.optionRowActive]}
+                onPress={() => {
+                  setBreed(item);
+                  setBreedSheetOpen(false);
+                }}
+              >
+                <Text style={[addSheet.optionText, active && addSheet.optionTextActive]}>
+                  {item}
+                </Text>
+                {active && <Ionicons name="checkmark-circle" size={20} color={COLORS.primary} />}
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+      </BottomSheet>
+
+      <BottomSheet
+        visible={dateSheetOpen}
+        title="Date de naissance"
+        onClose={() => setDateSheetOpen(false)}
+        height={500}
+      >
+        <CalendarPickerContent
+          selectedDate={birthDate}
+          maxYear={new Date().getFullYear()}
+          onSelect={(date) => {
+            setBirthDate(date);
+            setDateSheetOpen(false);
+          }}
+        />
+      </BottomSheet>
+    </>
+  );
+});
+
+const formatCows = (data) => {
+  return data
+    .map((cow) => ({
+      id: String(cow.id),
+      name: cow.name,
+      breed: cow.breed || 'Race inconnue',
+      sex: cow.sex || 'F',
+      age: cow.age || 0,
+      ear_tag: cow.ear_tag || '',
+      weight: cow.weight || 0,
+      birth_date: cow.birth_date || '',
+      photo: cow.photo ? `http://127.0.0.1:8000${cow.photo}` : null,
+      status: cow.health_status || 'ok',
+      statusLabel: cow.health_status === 'danger' ? 'Hors zone' : cow.health_status === 'warn' ? 'Surveiller' : 'OK',
+      temp: 38.5,
+      activity: 'Comportement normal',
+      gpsActive: false,
+      milkToday: 0,
+      gestationDay: null,
+    }))
+    .sort((a, b) => Number(b.id) - Number(a.id)); 
+};
+
 export default function HerdScreen() {
   const farmLoc = useFarmLocation('fr');
 
-  const [cows, setCows] = useState(initialCows);
+  const [cows, setCows] = useState([]);
   const [liveRosette, setLiveRosette] = useState(null);
   const [query, setQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState('all');
@@ -1503,20 +1757,34 @@ export default function HerdScreen() {
 
   const normalizedQuery = useMemo(() => query.trim().toLowerCase(), [query]);
 
-  const filteredCows = useMemo(() => {
-    return cows.filter((cow) => {
-      const matchFilter = activeFilter === 'all' || cow.status === activeFilter;
+const filteredCows = useMemo(() => {
+  return cows.filter((cow) => {
+    const matchFilter = activeFilter === 'all' || 
+      cow.sex === activeFilter || 
+      (activeFilter === 'M' && cow.sex === 'Mâle') ||
+      (activeFilter === 'F' && cow.sex === 'Femelle');
+    if (!matchFilter) return false;
+    if (!normalizedQuery) return true;
+    return (
+      cow.name?.toLowerCase().includes(normalizedQuery) ||
+      cow.id?.toLowerCase().includes(normalizedQuery) ||
+      cow.breed?.toLowerCase().includes(normalizedQuery)
+    );
+  });
+}, [activeFilter, normalizedQuery, cows]);
 
-      if (!matchFilter) return false;
-      if (!normalizedQuery) return true;
 
-      return (
-        cow.name?.toLowerCase().includes(normalizedQuery) ||
-        cow.id?.toLowerCase().includes(normalizedQuery) ||
-        cow.breed?.toLowerCase().includes(normalizedQuery)
-      );
-    });
-  }, [activeFilter, normalizedQuery, cows]);
+useEffect(() => {
+  const loadCows = async () => {
+    try {
+      const data = await getCows();
+      setCows(formatCows(data));
+    } catch (error) {
+      console.log('ERROR FETCH COWS:', error);
+    }
+  };
+  loadCows();
+}, []);
 
   const showSuccessSnackbar = useCallback(() => {
     setSnackbarVisible(true);
@@ -1526,9 +1794,44 @@ export default function HerdScreen() {
     }, 2400);
   }, []);
 
-  const handleAddCow = useCallback((newCow) => {
-    setCows((prev) => [newCow, ...prev]);
-  }, []);
+  const handleAddCow = useCallback(async () => {
+  try {
+    const data = await getCows();
+    setCows(formatCows(data));
+  } catch (error) {
+    console.log('ERROR REFRESH:', error);
+  }
+}, []);
+
+const handleDeleteCow = useCallback(async (cowId) => {
+  try {
+    await deleteCow(cowId);
+    setCows((prev) => prev.filter((c) => c.id !== cowId));
+  } catch (error) {
+    console.log('ERROR DELETE:', error);
+    alert('Erreur lors de la suppression');
+  }
+}, []);
+
+const [editCow, setEditCow] = useState(null);
+const [editSheetOpen, setEditSheetOpen] = useState(false);
+
+const handleOpenEdit = useCallback((cow) => {
+  setEditCow(cow);
+  setEditSheetOpen(true);
+}, []);
+
+const handleUpdateCow = useCallback(async (id, formData) => {
+  try {
+    await updateCow(id, formData);
+    const updated = await getCows();
+    setCows(formatCows(updated));
+    setEditSheetOpen(false);
+  } catch (error) {
+    console.log('ERROR UPDATE:', error.response?.data || error);
+    alert('Erreur lors de la modification');
+  }
+}, []);
 
   const refreshRosette = useCallback(async () => {
     try {
@@ -1552,12 +1855,18 @@ export default function HerdScreen() {
     return () => clearInterval(id);
   }, [refreshRosette]);
 
-  const renderCow = useCallback(
-    ({ item, index }) => (
-      <CowCard cow={item} index={index} onPress={setSelectedCow} />
-    ),
-    []
-  );
+const renderCow = useCallback(
+  ({ item, index }) => (
+    <CowCard
+      cow={item}
+      index={index}
+      onPress={setSelectedCow}
+      onDelete={handleDeleteCow}
+      onEdit={handleOpenEdit}
+    />
+  ),
+  [handleDeleteCow, handleOpenEdit]
+);
 
   const listHeader = useMemo(
     () => (
@@ -1630,6 +1939,8 @@ export default function HerdScreen() {
     [activeFilter, filteredCows.length, query, cows.length, farmLoc.loading, farmLoc.label]
   );
 
+  
+
   return (
     <SafeAreaView style={s.safe}>
       <FlatList
@@ -1690,8 +2001,26 @@ export default function HerdScreen() {
           <Text style={s.snackbarText}>Vache ajoutée</Text>
         </View>
       )}
+
+      <BottomSheet
+  visible={editSheetOpen}
+  title="Modifier la vache"
+  onClose={() => setEditSheetOpen(false)}
+  height={500}
+>
+  {editCow && (
+    <EditCowSheetContent
+      cow={editCow}
+      onUpdate={handleUpdateCow}
+      onClose={() => setEditSheetOpen(false)}
+    />
+  )}
+</BottomSheet>
     </SafeAreaView>
+
+    
   );
+
 }
 
 const sheet = StyleSheet.create({
